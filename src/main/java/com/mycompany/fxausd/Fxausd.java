@@ -2087,10 +2087,14 @@ public class Fxausd {
     );
 
     public static List<Candle> fetchMarketCandles(String symbol, int count, String timeframe) {
-        // Toggle: Use Cloud Data if TWELVE_DATA_API_KEY is set
+        // Try Twelve Data Cloud first if API key is present
         String cloudKey = System.getenv("TWELVE_DATA_API_KEY");
         if (cloudKey != null && !cloudKey.isBlank()) {
-            return fetchCloudCandles(symbol, count, timeframe, cloudKey);
+            List<Candle> cloudData = fetchCloudCandles(symbol, count, timeframe, cloudKey);
+            if (cloudData != null && !cloudData.isEmpty()) {
+                return cloudData;
+            }
+            System.out.println("🔄 [Fallback] Twelve Data failed. Trying MT5 Bridge for " + symbol + "...");
         }
 
         java.util.List<String> endpoints = getMt5ChartEndpoints();
@@ -2220,8 +2224,8 @@ public class Fxausd {
                 URL url = new URL(urlStr);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
+                conn.setConnectTimeout(20000); // 20s connect timeout
+                conn.setReadTimeout(45000);    // 45s read timeout (Wait longer for Twelve Data)
 
                 int status = conn.getResponseCode();
 
