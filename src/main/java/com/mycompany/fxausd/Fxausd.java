@@ -3344,48 +3344,53 @@ public class Fxausd {
     private static FusionResult calculateConsensus(java.util.List<Candle> candles, String symbol, String dir, MarketEnvironment env, double mtfScore) {
         FusionResult res = new FusionResult();
         res.direction = dir;
-        
-        // 1. Collect Specialist Votes
-        StrategyVote qilh = getQILHVote(candles, dir);
-        StrategyVote smc = getSMCVote(candles, dir);
-        StrategyVote sniper = getSniperVote(candles, dir);
-        StrategyVote breakout = getBreakoutVote(candles, dir);
-        StrategyVote meanRev = getMeanReversionVote(candles, dir);
-        
-        // 2. Dynamic Weighting based on Regime
-        double wQilh = 25, wSmc = 20, wSniper = 20, wMeanRev = 0, wBreak = 35; // Default (Breakout)
-        
-        if (env.regime.equals("TRENDING")) {
-            wQilh = 30; wSmc = 30; wSniper = 25; wMeanRev = 0; wBreak = 15;
-        } else if (env.regime.equals("RANGING")) {
-            wQilh = 20; wSmc = 15; wSniper = 0; wMeanRev = 50; wBreak = 15;
-        } else if (env.regime.equals("BREAKOUT")) {
-            wQilh = 25; wSmc = 20; wSniper = 20; wMeanRev = 0; wBreak = 35;
-        }
+        int last = candles.size() - 1;
 
-        // 3. Calculation
-        double totalScore = (qilh.confidence * wQilh / 100.0) +
-                           (smc.confidence * wSmc / 100.0) +
-                           (sniper.confidence * wSniper / 100.0) +
-                           (breakout.confidence * wBreak / 100.0) +
-                           (meanRev.confidence * wMeanRev / 100.0);
-        
-        // MTF Bonus (Institutional Evidence)
-        if (mtfScore > 0.8) totalScore += 5.0;
-        if (env.isKillzone) totalScore += 5.0;
-        
-        res.totalConfidence = Math.min(100.0, totalScore);
-        res.brainScores.put("QILH", qilh.confidence);
-        res.brainScores.put("SMC", smc.confidence);
-        res.brainScores.put("Sniper", sniper.confidence);
-        res.brainScores.put("Breakout", breakout.confidence);
-        res.brainScores.put("MeanRev", meanRev.confidence);
-        
-        res.institutionalGrade = (res.totalConfidence >= 95) ? "A+" : (res.totalConfidence >= 90) ? "A" : (res.totalConfidence >= 80) ? "B" : "C";
-        res.riskPercent = (res.totalConfidence >= 95) ? 0.02 : (res.totalConfidence >= 90) ? 0.015 : 0.01;
-        res.audit = String.format("QILH:%d SMC:%d SNIPER:%d BRK:%d MR:%d", 
-            (int)qilh.confidence, (int)smc.confidence, (int)sniper.confidence, (int)breakout.confidence, (int)meanRev.confidence);
+        // --- INSTITUTIONAL TRADE APPROVAL MATRIX (Blueprinted Weights) ---
+        double smcWeight = 20.0;        // Market Structure
+        double qilhWeight = 20.0;       // Liquidity Sweep
+        double displacementWeight = 15.0; // Displacement
+        double obWeight = 10.0;         // Order Block
+        double fvgWeight = 10.0;        // Fair Value Gap
+        double breakoutWeight = 10.0;   // Breakout Confirmation
+        double momentumWeight = 10.0;   // Sniper Momentum
+        double sessionWeight = 3.0;      // Session Quality
+        double spreadWeight = 2.0;       // Execution Quality
 
+        // 1. Calculate Component Scores (0.0 to 1.0)
+        double smcScore = (dir.equals("BUY") && detectMarketStructure(candles, last, 20) == 1) ? 1.0 : (dir.equals("SELL") && detectMarketStructure(candles, last, 20) == -1) ? 1.0 : 0.0;
+        double qilhScore = (dir.equals("BUY") && detectLiquiditySweepDirection(candles, last) == 1) ? 1.0 : (dir.equals("SELL") && detectLiquiditySweepDirection(candles, last) == -1) ? 1.0 : 0.0;
+        double dispScore = Math.min(1.0, calculateInstitutionalDisplacement(candles, last) / 1.5);
+        double obScore = detectOrderBlock(candles, last, 20);
+        double fvgScore = Math.min(1.0, Math.abs(detectFairValueGap(candles, last)) / 0.3);
+        double breakoutScore = (dir.equals("BUY") && detectBOS(candles, last) == 1) ? 1.0 : (dir.equals("SELL") && detectBOS(candles, last) == -1) ? 1.0 : 0.0;
+        double momentumScore = (dir.equals("BUY") && calculateOrderFlowIntensity(candles, last) > 0.6) ? 1.0 : (dir.equals("SELL") && calculateOrderFlowIntensity(candles, last) < 0.4) ? 1.0 : 0.0;
+        double sessScore = (env.session.equals("LONDON") || env.session.equals("OVERLAP")) ? 1.0 : 0.5;
+        double sprScore = (getCurrentSpreadPips(symbol) < 2.0) ? 1.0 : 0.0;
+
+        // 2. Final Matrix Sum
+        double matrixTotal = (smcScore * smcWeight) + 
+                            (qilhScore * qilhWeight) + 
+                            (dispScore * displacementWeight) + 
+                            (obScore * obWeight) + 
+                            (fvgScore * fvgWeight) + 
+                            (breakoutScore * breakoutWeight) + 
+                            (momentumScore * momentumWeight) + 
+                            (sessScore * sessionWeight) + 
+                            (sprScore * spreadWeight);
+
+        res.totalConfidence = Math.min(100.0, matrixTotal);
+        
+        // 3. Institutional Grading
+        if (res.totalConfidence >= 95) res.institutionalGrade = "A+ (EXCEPTIONAL)";
+        else if (res.totalConfidence >= 90) res.institutionalGrade = "A (HIGH PROBABILITY)";
+        else if (res.totalConfidence >= 80) res.institutionalGrade = "B (STAND STANDARD)";
+        else res.institutionalGrade = "C (REJECTED)";
+
+        res.riskPercent = (res.totalConfidence >= 95) ? 0.02 : 0.01; // 2% for A+, 1% for others
+        res.audit = String.format("SMC:%.0f QILH:%.0f DISP:%.0f OB:%.0f", smcScore*20, qilhScore*20, dispScore*15, obScore*10);
+        
+        // Return only if above floor
         return res;
     }
 
